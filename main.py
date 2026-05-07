@@ -657,3 +657,24 @@ async def process_zip(images: List[UploadFile]=File(...), csv_file: UploadFile=F
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/zip",
         headers={"Content-Disposition":"attachment; filename=aurevia_pins.zip"})
+    from fastapi import Request
+
+@app.post("/process-json")
+async def process_from_json(request: Request):
+    data = await request.json()
+    rows = data.get("rows", [])
+    results = []
+    errors = []
+    for i, row in enumerate(rows, 1):
+        fname = row.get("filename", f"pin_{i:03d}.jpg").strip()
+        try:
+            url = row.get("drive_url","").strip()
+            if not url: raise ValueError("drive_url vacía")
+            img = load_from_url(url)
+            jpg = process_image(img, row)
+            import base64
+            b64 = base64.b64encode(jpg).decode("utf-8")
+            results.append({"filename": fname, "piece_number": str(row.get("piece_number", i)), "status": "ok", "image_b64": b64})
+        except Exception as e:
+            errors.append({"filename": fname, "status": "error", "error": str(e)})
+    return {"total": len(results)+len(errors), "ok": len(results), "failed": len(errors), "images": results, "errors": errors}
