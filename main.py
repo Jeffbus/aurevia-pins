@@ -1,10 +1,13 @@
 """
-Aurevia Pin Maker v10
-- /process-json-custom: GPT provides layout positions + content_type determines visual style
-- 3 distinct visual styles: money_post, informative, retention
-- money_post:  high contrast, coral hook bg, white CTA pill, conversion-focused
-- informative: clean editorial, white card, dark CTA, educational tone
-- retention:   dramatic, dark overlay, huge hook, stop-scroll energy
+Aurevia Pin Maker v12
+GPT decides the FULL design for each image:
+- Text positions (y percent)
+- Font sizes
+- Text colors
+- Overlay/gradient intensity
+- CTA style (coral, white, dark)
+- Hook alignment (center, left)
+Railway just renders what GPT says.
 """
 
 from fastapi import FastAPI, Request
@@ -12,7 +15,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from PIL import Image, ImageDraw, ImageFont
 import io, requests, os, base64, numpy as np
 
-app = FastAPI(title="Aurevia Pin Maker v10")
+app = FastAPI(title="Aurevia Pin Maker v12")
 
 W, H = 1000, 1500
 
@@ -36,113 +39,16 @@ def first_font(candidates):
 FB = first_font(FONT_CANDIDATES_BOLD)
 FR = first_font(FONT_CANDIDATES_REG)
 
-# ─── Visual style presets per content_type ───────────────────────────────────
-STYLE_PRESETS = {
-
-    # MONEY POST — high contrast, coral hook background, white CTA, conversion
-    "money_post": {
-        "hook_font_size":      88,
-        "hook_color":          (255, 255, 255),
-        "hook_bg_color":       (232, 80, 28),    # coral box behind hook
-        "hook_bg_opacity":     245,
-        "hook_bg_radius":      16,
-        "hook_align":          "center",
-        "hook_shadow":         False,
-        "body_font_size":      32,
-        "body_color":          (255, 248, 240),
-        "body_font":           "bold",
-        "body_bg":             True,
-        "body_bg_color":       (0, 0, 0),
-        "body_bg_opacity":     130,
-        "body_bg_radius":      10,
-        "cta_bg":              (255, 255, 255),
-        "cta_fg":              (232, 80, 28),
-        "cta_font_size":       36,
-        "cta_px":              56,
-        "cta_py":              18,
-        "cta_radius":          40,
-        "gradient_top":        True,
-        "gradient_top_str":    50,
-        "gradient_bottom":     True,
-        "gradient_bottom_str": 210,
-        "overall_overlay":     True,
-        "overall_opacity":     35,
-        "border":              False,
-    },
-
-    # INFORMATIVE — clean editorial, white semi-transparent card, dark CTA
-    "informative": {
-        "hook_font_size":      68,
-        "hook_color":          (26, 26, 26),
-        "hook_bg_color":       (255, 255, 255),
-        "hook_bg_opacity":     235,
-        "hook_bg_radius":      12,
-        "hook_align":          "left",
-        "hook_shadow":         False,
-        "body_font_size":      28,
-        "body_color":          (55, 55, 55),
-        "body_font":           "regular",
-        "body_bg":             True,
-        "body_bg_color":       (255, 255, 255),
-        "body_bg_opacity":     215,
-        "body_bg_radius":      10,
-        "cta_bg":              (26, 26, 26),
-        "cta_fg":              (255, 255, 255),
-        "cta_font_size":       26,
-        "cta_px":              44,
-        "cta_py":              14,
-        "cta_radius":          30,
-        "gradient_top":        False,
-        "gradient_top_str":    0,
-        "gradient_bottom":     False,
-        "gradient_bottom_str": 0,
-        "overall_overlay":     False,
-        "overall_opacity":     0,
-        "border":              True,
-        "border_color":        (255, 255, 255),
-        "border_width":        7,
-    },
-
-    # RETENTION — dramatic, dark overlay, huge hook, stop-scroll, urgent CTA
-    "retention": {
-        "hook_font_size":      102,
-        "hook_color":          (255, 255, 255),
-        "hook_bg_color":       (0, 0, 0),
-        "hook_bg_opacity":     0,              # no box — pure shadow effect
-        "hook_bg_radius":      0,
-        "hook_align":          "center",
-        "hook_shadow":         True,
-        "body_font_size":      34,
-        "body_color":          (255, 230, 200),
-        "body_font":           "bold",
-        "body_bg":             False,
-        "body_bg_color":       (0, 0, 0),
-        "body_bg_opacity":     0,
-        "body_bg_radius":      0,
-        "cta_bg":              (232, 80, 28),
-        "cta_fg":              (255, 255, 255),
-        "cta_font_size":       34,
-        "cta_px":              52,
-        "cta_py":              17,
-        "cta_radius":          40,
-        "gradient_top":        True,
-        "gradient_top_str":    200,
-        "gradient_bottom":     True,
-        "gradient_bottom_str": 230,
-        "overall_overlay":     True,
-        "overall_opacity":     80,
-        "border":              False,
-    },
-}
-
-
-# ─── Utilities ───────────────────────────────────────────────────────────────
 
 def fnt(bold, size):
     path = FB if bold else FR
     if path:
         return ImageFont.truetype(path, size)
     return ImageFont.load_default()
+
+def hex_to_rgb(h):
+    h = h.lstrip('#')
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
 def load_from_url(url):
     if "drive.google.com" in url:
@@ -184,26 +90,23 @@ def wrap_text(text, f, max_w, max_lines=None):
         lines.append(cur)
     return lines
 
-def line_heights(draw, lines, f, lh=8):
-    total = 0
-    for line in lines:
-        bb = draw.textbbox((0, 0), line, font=f)
-        total += (bb[3] - bb[1]) + lh
-    return total
+def add_gradient(img, y0, y1, a0, a1, color=(0,0,0)):
+    ov = Image.new("RGBA", img.size, (0,0,0,0))
+    d = ImageDraw.Draw(ov)
+    span = max(y1-y0, 1)
+    for i in range(span):
+        a = int(a0 + (a1-a0)*i/span)
+        d.rectangle([0, y0+i, W, y0+i+1], fill=(*color, a))
+    return Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
 
-def draw_lines(draw, lines, f, y, color, align="center", shadow=False, lh=8, left_x=65):
-    for line in lines:
-        bb = draw.textbbox((0, 0), line, font=f)
-        tw, lh_actual = bb[2] - bb[0], bb[3] - bb[1]
-        x = (W // 2 - tw // 2) if align == "center" else left_x
-        if shadow:
-            for ox, oy in [(-2,2),(2,2),(0,3),(2,-1),(-2,-1),(0,4)]:
-                draw.text((x+ox, y+oy), line, font=f, fill=(0,0,0))
-        draw.text((x, y), line, font=f, fill=color)
-        y += lh_actual + lh
-    return y
+def add_overlay(img, opacity):
+    if opacity <= 0:
+        return img
+    ov = Image.new("RGBA", img.size, (0,0,0,0))
+    ImageDraw.Draw(ov).rectangle([0,0,W,H], fill=(0,0,0,opacity))
+    return Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
 
-def add_rect_overlay(img, color_rgba, box, radius=0):
+def add_box(img, color_rgba, box, radius=0):
     ov = Image.new("RGBA", img.size, (0,0,0,0))
     d = ImageDraw.Draw(ov)
     if radius:
@@ -212,20 +115,29 @@ def add_rect_overlay(img, color_rgba, box, radius=0):
         d.rectangle(box, fill=color_rgba)
     return Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
 
-def add_gradient(img, y0, y1, a0, a1, color=(0,0,0)):
-    ov = Image.new("RGBA", img.size, (0,0,0,0))
-    d = ImageDraw.Draw(ov)
-    span = max(y1 - y0, 1)
-    for i in range(span):
-        a = int(a0 + (a1 - a0) * i / span)
-        d.rectangle([0, y0+i, W, y0+i+1], fill=(*color, a))
-    return Image.alpha_composite(img.convert("RGBA"), ov).convert("RGB")
+def draw_text_clean(draw, lines, f, y, color, align, shadow_strength, left_x=65):
+    """Draw text with multi-layer shadow for legibility — no box needed."""
+    for line in lines:
+        bb = draw.textbbox((0,0), line, font=f)
+        tw, lh = bb[2]-bb[0], bb[3]-bb[1]
+        x = (W//2 - tw//2) if align == "center" else left_x
+        if shadow_strength > 0:
+            offsets = [(-3,3),(3,3),(3,-3),(-3,-3),(0,4),(4,0),(-4,0),(0,-4),(0,0)]
+            for i, (ox, oy) in enumerate(offsets):
+                if i < len(offsets)-1:
+                    draw.text((x+ox, y+oy), line, font=f, fill=(0,0,0))
+                else:
+                    draw.text((x, y), line, font=f, fill=color)
+        else:
+            draw.text((x, y), line, font=f, fill=color)
+        y += lh + 6
+    return y
 
-def draw_pill_cta(draw, text, f, cx, y, bg, fg, px, py, r):
+def draw_pill(draw, text, f, cx, y, bg, fg, px, py, r):
     text = str(text or "").upper()
     bb = draw.textbbox((0,0), text, font=f)
     tw, th = bb[2]-bb[0], bb[3]-bb[1]
-    bw, bh = tw + px*2, th + py*2
+    bw, bh = tw+px*2, th+py*2
     x0 = cx - bw//2
     draw.rounded_rectangle([x0, y, x0+bw, y+bh], radius=r, fill=bg)
     draw.text((x0+px, y+py), text, font=f, fill=fg)
@@ -234,147 +146,174 @@ def draw_pill_cta(draw, text, f, cx, y, bg, fg, px, py, r):
 def analyze_image(img):
     arr = np.array(img.convert("L"))
     third = H // 3
-    zones = {"top": arr[:third,:], "middle": arr[third:2*third,:], "bottom": arr[2*third:,:]}
+    zones = {
+        "top":    arr[:third,:],
+        "middle": arr[third:2*third,:],
+        "bottom": arr[2*third:,:]
+    }
     scores = {}
     for name, zone in zones.items():
         gy = np.abs(np.diff(zone.astype(float), axis=0)).mean()
         gx = np.abs(np.diff(zone.astype(float), axis=1)).mean()
-        scores[name] = 100 - (gy + gx) / 2
+        scores[name] = 100 - (gy+gx)/2
     return max(scores, key=scores.get), arr.mean()
 
 
-# ─── Main render ─────────────────────────────────────────────────────────────
-
-def render_pin(img, hook, body_text, cta, content_type, layout):
-    s = STYLE_PRESETS.get(content_type, STYLE_PRESETS["money_post"])
+def render_pin(img, hook, body_text, cta, content_type, design):
+    """
+    Render pin using full design spec from GPT.
+    
+    design keys:
+      hook_y_percent        int   0-100
+      hook_font_size        int   60-110
+      hook_color            str   hex e.g. "#FFFFFF"
+      hook_align            str   "center" | "left"
+      hook_bold             bool
+      hook_shadow           int   0=none 1=light 2=heavy
+      hook_box              bool  add semi-transparent box behind hook
+      hook_box_color        str   hex
+      hook_box_opacity      int   0-255
+      
+      body_show             bool
+      body_y_percent        int   0-100
+      body_font_size        int   24-40
+      body_color            str   hex
+      body_align            str   "center" | "left"
+      body_shadow           int   0-2
+      
+      cta_y_percent         int   0-100
+      cta_style             str   "coral" | "white" | "dark" | "outline"
+      cta_font_size         int   24-36
+      
+      overlay_opacity       int   0-120   full image dark overlay
+      grad_top              bool
+      grad_top_strength     int   0-220
+      grad_bottom           bool
+      grad_bottom_strength  int   0-240
+    """
     c = crop_img(img)
     best_zone, brightness = analyze_image(c)
 
-    # Full overlay
-    if s["overall_overlay"] and s["overall_opacity"] > 0:
-        c = add_rect_overlay(c, (0,0,0,s["overall_opacity"]), [0,0,W,H])
+    # ── Full overlay ──
+    opacity = int(design.get("overlay_opacity", 40))
+    c = add_overlay(c, opacity)
 
-    # Gradients
-    if s["gradient_top"] and s["gradient_top_str"] > 0:
-        c = add_gradient(c, 0, int(H*0.42), 0, s["gradient_top_str"])
-    if s["gradient_bottom"] and s["gradient_bottom_str"] > 0:
-        c = add_gradient(c, int(H*0.58), H, 0, s["gradient_bottom_str"])
+    # ── Gradients ──
+    if design.get("grad_top", True):
+        strength = int(design.get("grad_top_strength", 160))
+        c = add_gradient(c, 0, int(H*0.42), 0, strength)
 
-    # Border (informative)
-    if s.get("border"):
-        d_tmp = ImageDraw.Draw(c)
-        bw = s.get("border_width", 6)
-        d_tmp.rectangle([bw, bw, W-bw, H-bw],
-                         outline=s.get("border_color",(255,255,255)), width=bw)
+    if design.get("grad_bottom", True):
+        strength = int(design.get("grad_bottom_strength", 190))
+        c = add_gradient(c, int(H*0.58), H, 0, strength)
+
+    # ── Hook box (optional) ──
+    hook_y = int(H * float(design.get("hook_y_percent", 7)) / 100)
+    hook_f = fnt(design.get("hook_bold", True), int(design.get("hook_font_size", 80)))
+    hook_lines = wrap_text(hook, hook_f, W-90, max_lines=3)
+
+    if design.get("hook_box", False) and hook_lines:
+        box_color = hex_to_rgb(design.get("hook_box_color", "#000000"))
+        box_opacity = int(design.get("hook_box_opacity", 140))
+        dummy = ImageDraw.Draw(Image.new("RGB",(1,1)))
+        total_h = sum(
+            dummy.textbbox((0,0), l, font=hook_f)[3] -
+            dummy.textbbox((0,0), l, font=hook_f)[1] + 6
+            for l in hook_lines
+        ) + 30
+        c = add_box(c, (*box_color, box_opacity),
+                    [38, hook_y-14, W-38, hook_y+total_h],
+                    radius=14)
 
     d = ImageDraw.Draw(c)
 
-    # ── Positions from GPT or smart defaults ──
-    hook_y_pct = layout.get("hook_y_percent", 7)
-    body_y_pct = layout.get("body_y_percent", 56)
-    cta_y_pct  = layout.get("cta_y_percent", 82)
+    # ── Draw hook ──
+    hook_color = hex_to_rgb(design.get("hook_color", "#FFFFFF"))
+    hook_align = design.get("hook_align", "center")
+    hook_shadow = int(design.get("hook_shadow", 2))
+    hook_y = draw_text_clean(d, hook_lines, hook_f, hook_y,
+                              hook_color, hook_align, hook_shadow)
 
-    # Informative: if subject is at top, flip text to bottom
-    if content_type == "informative" and best_zone == "top":
-        hook_y_pct = max(hook_y_pct, 56)
-        body_y_pct = max(body_y_pct, 72)
-        cta_y_pct  = max(cta_y_pct, 86)
+    # ── Draw body ──
+    if body_text and design.get("body_show", True):
+        body_y = int(H * float(design.get("body_y_percent", 55)) / 100)
+        body_f = fnt(False, int(design.get("body_font_size", 30)))
+        body_lines = wrap_text(body_text, body_f, W-120, max_lines=2)
+        body_color = hex_to_rgb(design.get("body_color", "#F0E8E0"))
+        body_align = design.get("body_align", "center")
+        body_shadow = int(design.get("body_shadow", 1))
+        draw_text_clean(d, body_lines, body_f, body_y,
+                        body_color, body_align, body_shadow)
 
-    hook_y = int(H * hook_y_pct / 100)
-    body_y = int(H * body_y_pct / 100)
-    cta_y  = int(H * cta_y_pct  / 100)
+    # ── CTA button ──
+    cta_y   = int(H * float(design.get("cta_y_percent", 82)) / 100)
+    cta_style = design.get("cta_style", "coral")
+    cta_size  = int(design.get("cta_font_size", 30))
+    cta_f = fnt(True, cta_size)
 
-    # ── HOOK ──
-    hook_f     = fnt(True, s["hook_font_size"])
-    hook_lines = wrap_text(hook, hook_f, W - 110, max_lines=3)
-    hook_h     = line_heights(d, hook_lines, hook_f, 6) + 38
-
-    if s["hook_bg_opacity"] > 0:
-        pad = 22
-        c = add_rect_overlay(c,
-            (*s["hook_bg_color"], s["hook_bg_opacity"]),
-            [38, hook_y - pad, W - 38, hook_y + hook_h],
-            radius=s["hook_bg_radius"])
-        d = ImageDraw.Draw(c)
-
-    draw_lines(d, hook_lines, hook_f, hook_y,
-               s["hook_color"], align=s["hook_align"],
-               shadow=s["hook_shadow"], lh=6)
-
-    # ── BODY TEXT ──
-    if body_text and layout.get("body_show", True):
-        body_bold = s["body_font"] == "bold"
-        body_f    = fnt(body_bold, s["body_font_size"])
-        body_lines = wrap_text(body_text, body_f, W - 130, max_lines=2)
-
-        if body_lines:
-            if s["body_bg"] and s["body_bg_opacity"] > 0:
-                bh = line_heights(d, body_lines, body_f, 6) + 26
-                c = add_rect_overlay(c,
-                    (*s["body_bg_color"], s["body_bg_opacity"]),
-                    [48, body_y - 12, W - 48, body_y + bh],
-                    radius=s["body_bg_radius"])
-                d = ImageDraw.Draw(c)
-
-            draw_lines(d, body_lines, body_f, body_y,
-                       s["body_color"], align=s["hook_align"],
-                       shadow=s["hook_shadow"], lh=6)
-
-    # ── CTA ──
-    cta_f = fnt(True, s["cta_font_size"])
-    draw_pill_cta(d, cta, cta_f, W//2, cta_y,
-                  s["cta_bg"], s["cta_fg"],
-                  s["cta_px"], s["cta_py"], s["cta_radius"])
+    CTA_STYLES = {
+        "coral":   {"bg": (232,80,28),  "fg": (255,255,255)},
+        "white":   {"bg": (255,255,255),"fg": (26,26,26)},
+        "dark":    {"bg": (26,26,26),   "fg": (255,255,255)},
+        "outline": {"bg": (0,0,0,0),    "fg": (255,255,255)},
+    }
+    cs = CTA_STYLES.get(cta_style, CTA_STYLES["coral"])
+    draw_pill(d, cta, cta_f, W//2, cta_y, cs["bg"], cs["fg"], 50, 16, 38)
 
     buf = io.BytesIO()
     c.save(buf, "JPEG", quality=93, optimize=True)
     return buf.getvalue()
 
 
-# ─── Routes ──────────────────────────────────────────────────────────────────
+# ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "10.0",
-            "styles": list(STYLE_PRESETS.keys())}
+    return {"status": "ok", "version": "12.0",
+            "mode": "GPT decides full design per image"}
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return """<h1>Aurevia Pin Maker v10</h1>
-<p>3 visual styles: money_post | informative | retention</p>
-<p>Endpoints: POST /process-json-custom &nbsp;|&nbsp; GET /health</p>"""
+    return "<h1>Aurevia Pin Maker v12</h1><p>GPT decides full design. POST /process-json-custom</p>"
 
 
 @app.post("/process-json-custom")
 async def process_custom(request: Request):
     """
-    n8n + GPT pipeline endpoint.
-
-    Input JSON:
+    Input:
     {
-      "image_url":    "https://img.theapi.app/temp/...",
-      "hook":         "Why Most Collagen Fails",
-      "body_text":    "Not every collagen supplement...",
-      "cta":          "Read This",
-      "content_type": "retention",          <- money_post | informative | retention
-      "filename":     "retention_01.jpg",
+      "image_url":    "https://...",
+      "hook":         "...",
+      "body_text":    "...",
+      "cta":          "...",
+      "content_type": "money_post|informative|retention",
+      "filename":     "pin.jpg",
       "piece_number": "1",
-      "layout": {                           <- from GPT vision analysis
+      "design": {
         "hook_y_percent": 8,
-        "body_y_percent": 54,
-        "cta_y_percent":  82,
-        "body_show":      true
+        "hook_font_size": 82,
+        "hook_color": "#FFFFFF",
+        "hook_align": "center",
+        "hook_bold": true,
+        "hook_shadow": 2,
+        "hook_box": false,
+        "hook_box_color": "#000000",
+        "hook_box_opacity": 140,
+        "body_show": true,
+        "body_y_percent": 55,
+        "body_font_size": 30,
+        "body_color": "#F0E8E0",
+        "body_align": "center",
+        "body_shadow": 1,
+        "cta_y_percent": 82,
+        "cta_style": "coral",
+        "cta_font_size": 30,
+        "overlay_opacity": 40,
+        "grad_top": true,
+        "grad_top_strength": 160,
+        "grad_bottom": true,
+        "grad_bottom_strength": 200
       }
-    }
-
-    Returns:
-    {
-      "status":       "ok",
-      "filename":     "retention_01_pin.jpg",
-      "piece_number": "1",
-      "content_type": "retention",
-      "image_b64":    "...",
-      "size_bytes":   123456
     }
     """
     data = await request.json()
@@ -385,18 +324,15 @@ async def process_custom(request: Request):
     body_text    = " ".join(str(data.get("body_text", "")).split())
     cta          = " ".join(str(data.get("cta", "Learn More")).split())
     content_type = str(data.get("content_type", "money_post")).strip()
-    layout       = data.get("layout", {})
+    design       = data.get("design", {})
 
     url = (data.get("image_url") or data.get("drive_url") or "").strip()
     if not url:
-        return JSONResponse({"status": "error", "error": "image_url is required"}, status_code=400)
-
-    if content_type not in STYLE_PRESETS:
-        content_type = "money_post"
+        return JSONResponse({"status": "error", "error": "image_url required"}, status_code=400)
 
     try:
         img = load_from_url(url)
-        jpg = render_pin(img, hook, body_text, cta, content_type, layout)
+        jpg = render_pin(img, hook, body_text, cta, content_type, design)
         out_name = fname.rsplit(".", 1)[0] + "_pin.jpg"
         b64 = base64.b64encode(jpg).decode("utf-8")
         return JSONResponse({
