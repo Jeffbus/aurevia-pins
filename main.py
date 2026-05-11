@@ -312,4 +312,3 @@ async def process_custom(request: Request):
         })
     except Exception as e:
         return JSONResponse({"status":"error","error":str(e)}, status_code=500)
-        
